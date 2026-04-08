@@ -5,19 +5,33 @@ export async function up() {
     const queryInterface: QueryInterface = sequelize.getQueryInterface();
     console.log("Running migration: add status column to learning_modules table...");
 
-    // 1. Create the ENUM type if it doesn't exist
+    // 1. Create the ENUM type with standardized values
     await sequelize.query(
-        "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'enum_learning_modules_status') THEN CREATE TYPE \"enum_learning_modules_status\" AS ENUM('enriching', 'completed', 'failed'); END IF; END $$;"
+        "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'enum_learning_modules_status') THEN CREATE TYPE \"enum_learning_modules_status\" AS ENUM('pending', 'inprogress', 'completed', 'failed'); END IF; END $$;"
     );
 
-    // 2. Add the column
+    // Ensure all values exist if the type was created with different values previously
+    await sequelize
+        .query("ALTER TYPE \"enum_learning_modules_status\" ADD VALUE IF NOT EXISTS 'pending';")
+        .catch(() => {});
+    await sequelize
+        .query("ALTER TYPE \"enum_learning_modules_status\" ADD VALUE IF NOT EXISTS 'inprogress';")
+        .catch(() => {});
+    await sequelize
+        .query("ALTER TYPE \"enum_learning_modules_status\" ADD VALUE IF NOT EXISTS 'completed';")
+        .catch(() => {});
+    await sequelize
+        .query("ALTER TYPE \"enum_learning_modules_status\" ADD VALUE IF NOT EXISTS 'failed';")
+        .catch(() => {});
+
+    // 2. Add the column with the new standardized default
     await queryInterface.addColumn("learning_modules", "status", {
-        type: DataTypes.ENUM("enriching", "completed", "failed"),
-        defaultValue: "enriching",
+        type: DataTypes.ENUM("pending", "inprogress", "completed", "failed"),
+        defaultValue: "pending",
         allowNull: false
     });
 
-    console.log("✅ Added status column to learning_modules");
+    console.log("✅ Added standardized status column to learning_modules");
 }
 
 export async function down() {

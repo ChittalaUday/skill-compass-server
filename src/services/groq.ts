@@ -8,7 +8,7 @@ dotenv.config();
 // to avoid common 400 errors seen in logs.
 const ALLOWED_CHAT_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it", "llama3-8b-8192"];
 
-const DEFAULT_MODEL = "llama-3.3-70b-versatile";
+const MAX_RETRIES = 3;
 const BLOCK_DURATION_MS = 5 * 60 * 60 * 1000; // 5 hours
 
 // Load all available API keys
@@ -155,7 +155,7 @@ export async function getJsonCompletion<T = any>(prompt: string, options: GroqCo
         const content = completion.choices[0]?.message?.content || "{}";
         try {
             return JSON.parse(content) as T;
-        } catch (_parseError) {
+        } catch (_error) {
             console.error(`Failed to parse JSON response from model ${model}:`, content);
             throw new Error(`Failed to parse JSON response from LLM (${model})`);
         }

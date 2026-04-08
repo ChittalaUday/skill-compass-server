@@ -1,5 +1,4 @@
 import sequelize from "../config/db.js";
-import { QueryTypes } from "sequelize";
 
 export async function up() {
     console.log("Standardizing status ENUMs across tables...");
@@ -10,7 +9,7 @@ export async function up() {
         await sequelize.query(
             "ALTER TYPE \"enum_learning_paths_status\" ADD VALUE IF NOT EXISTS 'pending' BEFORE 'inprogress';"
         );
-    } catch (e) {
+    } catch (_e) {
         console.log("LearningPath ENUM update skipped or already applied.");
     }
 
@@ -21,7 +20,7 @@ export async function up() {
         await sequelize.query(
             "ALTER TYPE \"enum_learning_modules_status\" ADD VALUE IF NOT EXISTS 'pending' BEFORE 'inprogress';"
         );
-    } catch (e) {
+    } catch (_e) {
         console.log("LearningModule ENUM update skipped or already applied.");
     }
 
@@ -34,7 +33,7 @@ export async function up() {
             "ALTER TYPE \"enum_user_module_progress_status\" RENAME VALUE 'in-progress' TO 'inprogress';"
         );
         await sequelize.query("ALTER TYPE \"enum_user_module_progress_status\" RENAME VALUE 'abandoned' TO 'failed';");
-    } catch (e) {
+    } catch (_e) {
         console.log("UserModuleProgress ENUM update skipped or already applied.");
     }
 

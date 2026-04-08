@@ -21,7 +21,7 @@ export class ResourceUrlService {
     /**
      * Find educational video URL using YouTube API with validation
      */
-    async findVideoUrl(topic: string, durationMinutes?: number): Promise<string | null> {
+    async findVideoUrl(topic: string, _durationMinutes?: number): Promise<string | null> {
         if (!this.youtubeApiKey) return null;
 
         const searchQueries = [`${topic} tutorial educational in English`, `${topic} course explanation`, `${topic}`];
@@ -119,7 +119,7 @@ export class ResourceUrlService {
             });
 
             return response.status >= 200 && response.status < 400;
-        } catch (error: any) {
+        } catch (_error) {
             // Some sites block HEAD, try a minimal GET request
             try {
                 const response = await axios.get(url, {
@@ -131,7 +131,7 @@ export class ResourceUrlService {
                     }
                 });
                 return response.status >= 200 && response.status < 400;
-            } catch (innerError) {
+            } catch (_innerError) {
                 return false;
             }
         }

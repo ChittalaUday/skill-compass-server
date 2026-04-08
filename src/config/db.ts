@@ -75,8 +75,8 @@ export async function postgresConnection() {
         console.log(`✅ ${isAWS ? "AWS RDS" : isNeon ? "Neon" : "PostgresSQL"} connection established`);
         await sequelize.sync(); // Sync models with database
         return sequelize;
-    } catch (error) {
-        console.error("❌ PostgresSQL Connection failed:", error);
+    } catch (_error) {
+        console.error("❌ PostgresSQL Connection failed:");
         process.exit(1);
     }
 }

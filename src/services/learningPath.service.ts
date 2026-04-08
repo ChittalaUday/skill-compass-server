@@ -63,9 +63,6 @@ class LearningPathService {
                 throw new Error("User preferences not found");
             }
 
-            // Fetch skills for module search
-            const skillIds = preferences.skillIds || [];
-
             // Fetch the most recent learning path
             let learningPath = await LearningPath.findOne({
                 where: { userId },
