@@ -22,8 +22,9 @@ class LearningModule extends Model {
     declare courseId: number | null;
     declare learningPathId: number | null; // New: link to learning path
     declare orderInPath: number | null; // New: sequence in path
-    declare isAiGenerated: boolean; // New: flag for AI-generated modules
-    declare generationMetadata: any; // New: JSONB for AI generation details
+    declare isAiGenerated: boolean;
+    declare status: "pending" | "inprogress" | "completed" | "failed"; // Standardized status
+    declare generationMetadata: any;
 }
 
 LearningModule.init(
@@ -51,6 +52,11 @@ LearningModule.init(
                 "workshop",
                 "reading"
             ),
+            allowNull: false
+        },
+        status: {
+            type: DataTypes.ENUM("pending", "inprogress", "completed", "failed"),
+            defaultValue: "pending",
             allowNull: false
         },
         format: {

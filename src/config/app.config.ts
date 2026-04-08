@@ -11,7 +11,7 @@ export function AppConfig(app: Application) {
     app.use(morgan("dev"));
     app.use(
         cors({
-            origin: "*",
+            origin: true,
             credentials: true
         })
     );

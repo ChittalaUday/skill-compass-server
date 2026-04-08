@@ -61,13 +61,37 @@ export const learningProgressController = {
                 return sendResponse(res, false, "Invalid module ID", 400);
             }
 
-            const { status, progressPercentage, timeSpent, score, maxScore, passed, rating, feedback, progressData } =
-                req.body;
+            const {
+                status,
+                progressPercentage,
+                timeSpent,
+                score,
+                maxScore,
+                passed,
+                rating,
+                feedback,
+                progressData,
+                testCompleted,
+                testResults
+            } = req.body;
 
-            // Validate status if provided
-            const validStatuses = ["not-started", "in-progress", "completed", "failed"];
+            const validStatuses = ["pending", "inprogress", "completed", "failed"];
             if (status && !validStatuses.includes(status)) {
                 return sendResponse(res, false, `Invalid status. Must be one of: ${validStatuses.join(", ")}`, 400);
+            }
+
+            // Enforce test completion for 'completed' status
+            if (status === "completed" && !testCompleted && !testResults) {
+                // If it's already completed in DB, we're fine, otherwise we need the test info
+                const existing = await UserModuleProgress.findOne({ where: { userId, moduleId } });
+                if (!existing || (!existing.testCompleted && !testResults)) {
+                    return sendResponse(
+                        res,
+                        false,
+                        "Test must be completed to mark module as 'completed'. Use the /complete endpoint.",
+                        400
+                    );
+                }
             }
 
             // Validate progressPercentage if provided
@@ -93,7 +117,7 @@ export const learningProgressController = {
                 progress = await UserModuleProgress.create({
                     userId,
                     moduleId,
-                    status: status || "in-progress",
+                    status: status || "inprogress",
                     progressPercentage: progressPercentage || 0,
                     timeSpent,
                     score,
@@ -101,6 +125,8 @@ export const learningProgressController = {
                     passed,
                     rating,
                     feedback,
+                    testCompleted: testCompleted || false,
+                    testResults: testResults || null,
                     progressData: progressData || {},
                     completedAt: status === "completed" ? new Date() : null
                 });
@@ -115,6 +141,8 @@ export const learningProgressController = {
                     passed,
                     rating,
                     feedback,
+                    testCompleted: testCompleted !== undefined ? testCompleted : progress.testCompleted,
+                    testResults: testResults !== undefined ? testResults : progress.testResults,
                     progressData,
                     completedAt: status === "completed" ? new Date() : progress.completedAt
                 });
@@ -143,9 +171,95 @@ export const learningProgressController = {
                 console.error("[Quality Update] Error:", e);
             }
 
+            // Real-time update via WebSocket
+            try {
+                const { websocketService } = await import("../services/websocket.service.js");
+                websocketService.emitToUser(userId, "progress:updated", {
+                    moduleId,
+                    status: (progress as any).status,
+                    progressPercentage: (progress as any).progressPercentage,
+                    message: `Module progress updated to ${status}`
+                });
+            } catch (wsErr) {
+                console.error("[WS Progress Emit] Error:", wsErr);
+            }
+
             return sendResponse(res, true, "Module progress updated successfully", 200, progress);
         } catch (error: any) {
             console.error("Update Module Progress Error:", error);
+            return sendResponse(res, false, error.message || "Internal Server Error", 500);
+        }
+    },
+
+    /**
+     * Mark a module as completed (requires authentication)
+     */
+    async completeModule(req: Request, res: Response) {
+        try {
+            const userId = (req as any).user.id;
+            const moduleId = parseInt(String(req.params.moduleId));
+
+            if (isNaN(moduleId)) {
+                return sendResponse(res, false, "Invalid module ID", 400);
+            }
+
+            const { testResults } = req.body;
+
+            // testResults is optional now, providing a default if missing
+            const finalTestResults = testResults || {
+                completedAt: new Date(),
+                source: "manual_complete",
+                score: 100
+            };
+
+            let progress = await UserModuleProgress.findOne({
+                where: { userId, moduleId }
+            });
+
+            if (!progress) {
+                progress = await UserModuleProgress.create({
+                    userId,
+                    moduleId,
+                    status: "completed",
+                    progressPercentage: 100,
+                    testCompleted: true,
+                    testResults: finalTestResults,
+                    completedAt: new Date()
+                });
+            } else {
+                await progress.update({
+                    status: "completed",
+                    progressPercentage: 100,
+                    testCompleted: true,
+                    testResults: finalTestResults,
+                    completedAt: new Date()
+                });
+            }
+
+            // Update module completion count
+            try {
+                const { LearningModule } = await import("../models/index.js");
+                await LearningModule.increment("completionCount", { where: { id: moduleId } });
+            } catch (e) {
+                console.error("[Completion Count Update] Error:", e);
+            }
+
+            // Real-time update via WebSocket
+            try {
+                const { websocketService } = await import("../services/websocket.service.js");
+                websocketService.emitToUser(userId, "progress:updated", {
+                    moduleId,
+                    status: "completed",
+                    isCompleted: true,
+                    message: "Module marked as completed!"
+                });
+            } catch (wsErr) {
+                console.error("[WS Progress Emit] Error:", wsErr);
+            }
+
+            return sendResponse(res, true, "Module marked as completed successfully", 200, progress);
+        } catch (error: any) {
+            console.error("Complete Module Error:", error);
             return sendResponse(res, false, error.message || "Internal Server Error", 500);
         }
     }

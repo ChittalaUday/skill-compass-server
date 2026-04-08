@@ -17,6 +17,7 @@ import LearningSchedule from "./LearningSchedule.js";
 import AiAnalysis from "./AiAnalysis.js";
 import EducationalResource from "./EducationalResource.js";
 import KidDrawingImage from "./KidDrawingImage.js";
+import ModuleTranscript from "./ModuleTranscript.js";
 
 // 1. USER PREFERENCES
 User.hasOne(UserPreferences, { foreignKey: "userId", as: "preferences" });
@@ -37,6 +38,10 @@ UserModuleProgress.belongsTo(User, { foreignKey: "userId", as: "user" });
 
 LearningModule.hasMany(UserModuleProgress, { foreignKey: "moduleId", as: "userProgress", onDelete: "CASCADE" });
 UserModuleProgress.belongsTo(LearningModule, { foreignKey: "moduleId", as: "module", onDelete: "CASCADE" });
+
+// 3.1 MODULE TRANSCRIPTS
+LearningModule.hasOne(ModuleTranscript, { foreignKey: "moduleId", as: "transcript", onDelete: "CASCADE" });
+ModuleTranscript.belongsTo(LearningModule, { foreignKey: "moduleId", as: "module", onDelete: "CASCADE" });
 
 // 4. LEARNING PATHS
 User.hasMany(LearningPath, { foreignKey: "userId", as: "learningPaths" });
@@ -117,5 +122,6 @@ export {
     AiAnalysis,
     EducationalResource,
     KidDrawingImage,
+    ModuleTranscript,
     Op
 };

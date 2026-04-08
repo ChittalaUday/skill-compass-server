@@ -8,11 +8,14 @@ import {
     Course,
     Branches,
     LearningSchedule,
-    UserModuleProgress
+    UserModuleProgress,
+    ModuleTranscript
 } from "../models/index.js";
 import { getJsonCompletion } from "./groq.js";
 import { websocketService } from "./websocket.service.js";
 import { resourceUrlService } from "./resourceUrl.service.js";
+import { promptService, UserContext } from "./prompt.service.js";
+import { transcriptService } from "./transcript.service.js";
 import sequelize from "../config/db.js";
 import { QueryTypes } from "sequelize";
 
@@ -37,9 +40,6 @@ interface GeneratedPath {
 }
 
 class LearningPathService {
-    /**
-     * Main function to generate learning path for a user
-     */
     /**
      * Main function to generate learning path for a user
      */
@@ -92,7 +92,7 @@ class LearningPathService {
                 learningPath = await LearningPath.create({
                     userId,
                     name: `Learning Path for ${user.name} #${(await LearningPath.count({ where: { userId } })) + 1}`,
-                    status: "generating",
+                    status: "inprogress",
                     userPreferencesId: preferences.id,
                     path: null
                 });
@@ -107,7 +107,7 @@ class LearningPathService {
 
                 // Update status to generating
                 await learningPath.update({
-                    status: "generating",
+                    status: "inprogress",
                     path: null,
                     userPreferencesId: preferences.id
                 });
@@ -164,36 +164,40 @@ class LearningPathService {
                 return;
             }
 
-            // Calculate how many new modules needed from Groq
+            // Calculate constraints in code
             const targetModuleCount = this.calculateTargetModuleCount(user.group, preferences.weeklyLearningHours);
+            const difficulty = this.determineDifficulty(user, preferences);
 
             console.log(`[Learning Path] Generating ${targetModuleCount} fresh modules for path ${learningPathId}`);
 
-            // Generate path based on user group (only for missing modules)
-            let generatedPath: GeneratedPath;
-            switch (user.group) {
-                case "COLLEGE_STUDENTS":
-                    generatedPath = await this.generateCollegeStudentPath(
-                        user,
-                        preferences,
-                        skills,
-                        interests,
-                        course,
-                        branch
-                    );
-                    break;
-                case "PROFESSIONALS":
-                    generatedPath = await this.generateProfessionalPath(user, preferences, skills, interests);
-                    break;
-                case "TEENS":
-                    generatedPath = await this.generateTeenPath(user, preferences, skills, interests);
-                    break;
-                case "SENIORS":
-                    generatedPath = await this.generateSeniorPath(user, preferences, skills, interests);
-                    break;
-                default:
-                    throw new Error(`Unsupported user group: ${user.group}`);
-            }
+            // Prepare user context for prompt
+            const userContext: UserContext = {
+                name: user.name,
+                age: user.age,
+                group: user.group,
+                skills: skills.map((s) => s.name),
+                interests: interests.map((i) => i.name),
+                course: course?.name,
+                branch: branch?.name,
+                currentRole: preferences.currentRole,
+                targetRole: preferences.targetRole,
+                industry: preferences.industry,
+                experience: preferences.yearsOfExperience,
+                learningStyle: preferences.learningStyle,
+                weeklyHours: preferences.weeklyLearningHours,
+                accessibility: preferences.groupSpecificData?.accessibility
+            };
+
+            // Generate path using unified prompt system
+            const prompt = promptService.generateLearningPathPrompt(userContext, {
+                targetModuleCount,
+                difficulty
+            });
+
+            const generatedPath = await getJsonCompletion<GeneratedPath>(prompt, {
+                temperature: 0.7,
+                max_tokens: 4000
+            });
 
             // Create learning modules (all fresh)
             const moduleIds = await this.createModules(
@@ -222,13 +226,13 @@ class LearningPathService {
             await this.generateSchedule(userId, learningPathId, moduleIds, preferences.weeklyLearningHours);
 
             // Emit WebSocket event: generation completed
-            websocketService.emitGenerationCompleted(userId, {
-                learningPathId,
-                message: "Learning path generated successfully",
-                path: generatedPath
+            const { websocketService } = await import("./websocket.service.js");
+            websocketService.emitToUser(userId, "learning_path:completed", {
+                learningPathId: learningPathId,
+                message: "Your learning path is fully enriched and ready!"
             });
 
-            console.log(`Successfully generated learning path for user ${userId}`);
+            console.log(`[Learning Path] Full journey completed for user ${userId}`);
         } catch (error: any) {
             console.error(`Error during learning path generation for user ${userId}:`, error);
 
@@ -255,248 +259,26 @@ class LearningPathService {
     private calculateTargetModuleCount(userGroup: string, _weeklyHours: number): number {
         switch (userGroup) {
             case "COLLEGE_STUDENTS":
-                return 15; // Semester-based, comprehensive
+                return 15;
             case "PROFESSIONALS":
-                return 10; // Career-focused, concise
+                return 10;
             case "TEENS":
-                return 12; // Interest-driven, varied
+                return 12;
             case "SENIORS":
-                return 6; // Gentle-paced, accessible
+                return 6;
             default:
                 return 10;
         }
     }
 
     /**
-     * Generate learning path for college students (semester-based)
+     * Determine base difficulty for the path
      */
-    private async generateCollegeStudentPath(
-        user: any,
-        preferences: any,
-        skills: any[],
-        interests: any[],
-        course: any,
-        branch: any
-    ): Promise<GeneratedPath> {
-        const prompt = `Generate a comprehensive learning path for a college student with the following details:
-
-User Information:
-- Name: ${user.name}
-- Age: ${user.age}
-- Course: ${course?.name || "Not specified"}
-- Branch: ${branch?.name || "Not specified"}
-- Current Skills: ${skills.map((s) => s.name).join(", ") || "None"}
-- Interests: ${interests.map((i) => i.name).join(", ") || "None"}
-- Weekly Learning Hours: ${preferences.weeklyLearningHours || 5}
-- Learning Style: ${preferences.learningStyle || "mixed"}
-
-Generate a semester-based learning path with modules mapped to their academic curriculum. The path should:
-1. Include 6-8 learning modules per semester
-2. Progress from foundational to advanced topics
-3. Align with their branch specialization (${branch?.name || "general"})
-4. Include a mix of theory, projects, and assessments
-5. Consider their current skill level and interests
-
-Return a JSON object with:
-{
-  "name": "Learning path name",
-  "description": "Brief description of the path",
-  "modules": [
-    {
-      "title": "Module title",
-      "description": "Module description",
-      "moduleType": "course|micro-lesson|project|assessment|workshop|reading",
-      "difficulty": "beginner|intermediate|advanced|expert",
-      "duration": 120, // in minutes
-      "skillTags": ["skill1", "skill2"],
-      "category": "Semester 1|Semester 2|etc",
-      "subcategory": "Core|Elective|Project",
-      "searchKeywords": "optimal keywords for finding YouTube videos",
-      "prerequisites": [] // array of module titles or indices that must be completed first
-    }
-  ],
-  "metadata": {
-    "totalSemesters": 8,
-    "estimatedCompletionMonths": 48
-  }
-}`;
-
-        return await getJsonCompletion<GeneratedPath>(prompt, {
-            temperature: 0.7,
-            max_tokens: 4000
-        });
-    }
-
-    /**
-     * Generate learning path for professionals (skill/role-based)
-     */
-    private async generateProfessionalPath(
-        user: any,
-        preferences: any,
-        skills: any[],
-        interests: any[]
-    ): Promise<GeneratedPath> {
-        const prompt = `Generate a professional development learning path for the following professional:
-
-User Information:
-- Name: ${user.name}
-- Age: ${user.age}
-- Current Role: ${preferences.currentRole || "Not specified"}
-- Target Role: ${preferences.targetRole || "Not specified"}
-- Industry: ${preferences.industry || "Not specified"}
-- Years of Experience: ${preferences.yearsOfExperience || 0}
-- Current Skills: ${skills.map((s) => s.name).join(", ") || "None"}
-- Interests: ${interests.map((i) => i.name).join(", ") || "None"}
-- Weekly Learning Hours: ${preferences.weeklyLearningHours || 5}
-
-Generate a skill progression path that helps them transition from their current role to target role. The path should:
-1. Identify skill gaps between current and target role
-2. Include 8-12 learning modules
-3. Progress from foundational to advanced skills
-4. Include practical projects and case studies
-5. Focus on industry-relevant technologies and practices
-
-Return a JSON object with:
-{
-  "name": "Learning path name",
-  "description": "Brief description of the path",
-  "modules": [
-    {
-      "title": "Module title",
-      "description": "Module description",
-      "moduleType": "course|micro-lesson|project|assessment|certification|workshop|reading",
-      "difficulty": "beginner|intermediate|advanced|expert",
-      "duration": 120, // in minutes
-      "skillTags": ["skill1", "skill2"],
-      "category": "Technical Skills|Soft Skills|Leadership|Domain Knowledge",
-      "subcategory": "Core|Advanced|Specialized",
-      "searchKeywords": "optimal keywords for finding YouTube videos",
-      "prerequisites": [] // array of module titles that must be completed first
-    }
-  ],
-  "metadata": {
-    "skillGaps": ["gap1", "gap2"],
-    "estimatedCompletionMonths": 6
-  }
-}`;
-
-        return await getJsonCompletion<GeneratedPath>(prompt, {
-            temperature: 0.7,
-            max_tokens: 4000
-        });
-    }
-
-    /**
-     * Generate learning path for teens (skill learning, college prep, or interest-based)
-     */
-    private async generateTeenPath(
-        user: any,
-        preferences: any,
-        skills: any[],
-        interests: any[]
-    ): Promise<GeneratedPath> {
-        const prompt = `Generate a learning path for a teenager with the following details:
-
-User Information:
-- Name: ${user.name}
-- Age: ${user.age}
-- Current Skills: ${skills.map((s) => s.name).join(", ") || "None"}
-- Interests: ${interests.map((i) => i.name).join(", ") || "None"}
-- Weekly Learning Hours: ${preferences.weeklyLearningHours || 5}
-- Learning Style: ${preferences.learningStyle || "mixed"}
-
-Generate a learning path that focuses on:
-1. Skill development in their areas of interest
-2. College preparation if they're in high school
-3. Career exploration based on interests
-4. Mix of academic and practical skills
-5. Include 6-10 engaging, age-appropriate modules
-
-The path should be engaging, interactive, and help them explore potential career paths.
-
-Return a JSON object with:
-{
-  "name": "Learning path name",
-  "description": "Brief description of the path",
-  "modules": [
-    {
-      "title": "Module title",
-      "description": "Module description",
-      "moduleType": "course|micro-lesson|project|assessment|workshop|reading",
-      "difficulty": "beginner|intermediate|advanced",
-      "duration": 60, // in minutes
-      "skillTags": ["skill1", "skill2"],
-      "category": "Skill Development|College Prep|Career Exploration",
-      "subcategory": "Interactive|Project-Based|Theory",
-      "searchKeywords": "optimal keywords for finding YouTube videos",
-      "prerequisites": [] // array of module titles that must be completed first
-    }
-  ],
-  "metadata": {
-    "focusAreas": ["area1", "area2"],
-    "estimatedCompletionMonths": 3
-  }
-}`;
-
-        return await getJsonCompletion<GeneratedPath>(prompt, {
-            temperature: 0.8,
-            max_tokens: 3000
-        });
-    }
-
-    /**
-     * Generate learning path for seniors (gentle-paced, interest-driven)
-     */
-    private async generateSeniorPath(
-        user: any,
-        preferences: any,
-        skills: any[],
-        interests: any[]
-    ): Promise<GeneratedPath> {
-        const prompt = `Generate a gentle-paced learning path for a senior citizen with the following details:
-
-User Information:
-- Name: ${user.name}
-- Age: ${user.age}
-- Interests: ${interests.map((i) => i.name).join(", ") || "None"}
-- Weekly Learning Hours: ${preferences.weeklyLearningHours || 3}
-- Accessibility Settings: ${JSON.stringify(preferences.groupSpecificData?.accessibility || {})}
-
-Generate a learning path that is:
-1. Gentle-paced and easy to follow
-2. Interest-driven and enjoyable
-3. Includes 4-6 modules
-4. Focuses on practical, life-enriching skills
-5. Considers accessibility needs
-
-Return a JSON object with:
-{
-  "name": "Learning path name",
-  "description": "Brief description of the path",
-  "modules": [
-    {
-      "title": "Module title",
-      "description": "Module description",
-      "moduleType": "course|micro-lesson|reading",
-      "difficulty": "beginner",
-      "duration": 30, // in minutes
-      "skillTags": ["skill1", "skill2"],
-      "category": "Personal Enrichment|Technology Basics|Hobbies",
-      "subcategory": "Guided|Self-Paced",
-      "searchKeywords": "optimal keywords for finding YouTube videos",
-      "prerequisites": [] // array of module titles that must be completed first
-    }
-  ],
-  "metadata": {
-    "paceLevel": "gentle",
-    "estimatedCompletionMonths": 2
-  }
-}`;
-
-        return await getJsonCompletion<GeneratedPath>(prompt, {
-            temperature: 0.6,
-            max_tokens: 2000
-        });
+    private determineDifficulty(user: any, _preferences: any): "beginner" | "intermediate" | "advanced" | "expert" {
+        if (user.group === "SENIORS") return "beginner";
+        if (user.group === "TEENS") return "beginner";
+        if (user.group === "PROFESSIONALS" && (_preferences.yearsOfExperience || 0) > 5) return "advanced";
+        return "intermediate";
     }
 
     private async createModules(
@@ -506,110 +288,165 @@ Return a JSON object with:
         courseId?: number,
         branchId?: number
     ): Promise<number[]> {
-        const createdModules: any[] = [];
+        const moduleIds: number[] = [];
 
-        // Create new modules from Groq generation
-        console.log(`[Learning Path] Creating ${modules.length} modules`);
+        console.log(`[Learning Path] Creating ${modules.length} modules (Enrichment ongoing)`);
+        const enrichmentPromises: Promise<void>[] = [];
+
         for (let index = 0; index < modules.length; index++) {
             const module = modules[index];
+            const searchTerm = module.searchKeywords || module.title;
 
-            try {
-                // Get search keywords (use title if not provided)
-                const searchTerm = module.searchKeywords || module.title;
+            // 1. Parallel fetch of core content IMMEDIATELY (Fast search)
+            const [videoUrl, thumbnailUrl] = await Promise.all([
+                resourceUrlService.findVideoUrl(searchTerm, module.duration),
+                resourceUrlService.findThumbnail(searchTerm)
+            ]);
 
-                // Fetch real resources
-                console.log(`Fetching resources for module: ${module.title}`);
+            const guaranteedUrl =
+                videoUrl || `https://www.youtube.com/results?search_query=${encodeURIComponent(searchTerm)}`;
 
-                const [videoUrl, thumbnailUrl, pdfResources] = await Promise.all([
-                    resourceUrlService.findVideoUrl(searchTerm, module.duration),
-                    resourceUrlService.findThumbnail(searchTerm),
-                    resourceUrlService.findPdfResources(searchTerm)
-                ]);
-
-                // Get format metadata
-                const format = resourceUrlService.getFormatMetadata(module.moduleType, module.duration);
-
-                // Map prerequisites to already-created module IDs
-                const prerequisiteIds: number[] = [];
-                if (module.prerequisites && module.prerequisites.length > 0) {
-                    for (const prereqTitle of module.prerequisites) {
-                        // Find by title match
-                        const foundModule = createdModules.find(
-                            (m) =>
-                                m.title.toLowerCase().includes(prereqTitle.toLowerCase()) ||
-                                prereqTitle.toLowerCase().includes(m.title.toLowerCase())
-                        );
-
-                        if (foundModule) {
-                            prerequisiteIds.push(foundModule.id);
-                        }
-                    }
+            const created = await LearningModule.create({
+                title: module.title,
+                description: module.description,
+                moduleType: this.mapModuleType(module.moduleType),
+                difficulty: this.mapDifficulty(module.difficulty),
+                duration: module.duration,
+                contentUrl: guaranteedUrl,
+                thumbnailUrl: thumbnailUrl || `https://picsum.photos/seed/${encodeURIComponent(searchTerm)}/640/360`,
+                skillTags: module.skillTags || [],
+                category: module.category,
+                subcategory: module.subcategory,
+                learningPathId,
+                orderInPath: index + 1,
+                isAiGenerated: true,
+                targetUserGroups: [userGroup],
+                courseId: courseId || null,
+                groupSpecificMetadata: { branchId: branchId || null },
+                status: "inprogress",
+                generationMetadata: {
+                    message: "Transcript and summary are being generated..."
                 }
+            });
 
-                // Create module with all enhancements
-                const created = await LearningModule.create({
-                    title: module.title,
-                    description: module.description,
-                    moduleType: this.mapModuleType(module.moduleType),
-                    format: format.type as any, // Set format type
-                    difficulty: this.mapDifficulty(module.difficulty),
-                    duration: module.duration,
-                    contentUrl: videoUrl,
-                    thumbnailUrl: thumbnailUrl,
-                    category: module.category,
-                    subcategory: module.subcategory,
-                    skillTags: module.skillTags || [],
-                    prerequisiteModules: prerequisiteIds,
-                    targetUserGroups: [userGroup],
-                    learningPathId,
-                    orderInPath: index + 1,
-                    isAiGenerated: true,
-                    courseId: courseId || null,
-                    groupSpecificMetadata: { branchId: branchId || null },
-                    generationMetadata: {
-                        generatedAt: new Date(),
-                        generatedFor: learningPathId,
-                        searchKeywords: searchTerm,
-                        formatMetadata: format,
-                        pdfResources: pdfResources,
-                        originalPrerequisites: module.prerequisites || []
-                    }
-                });
+            moduleIds.push(created.id);
 
-                createdModules.push(created);
-
-                console.log(`Created module ${index + 1}/${modules.length}: ${module.title}`);
-            } catch (error) {
-                console.error(`Error creating module "${module.title}":`, error);
-
-                // Create module without resources rather than failing
-                const created = await LearningModule.create({
-                    title: module.title,
-                    description: module.description,
-                    moduleType: this.mapModuleType(module.moduleType),
-                    difficulty: this.mapDifficulty(module.difficulty),
-                    duration: module.duration,
-                    skillTags: module.skillTags || [],
-                    category: module.category,
-                    subcategory: module.subcategory,
-                    learningPathId,
-                    orderInPath: index + 1,
-                    isAiGenerated: true,
-                    targetUserGroups: [userGroup],
-                    courseId: courseId || null,
-                    groupSpecificMetadata: { branchId: branchId || null },
-                    generationMetadata: {
-                        generatedAt: new Date(),
-                        generatedFor: learningPathId,
-                        error: (error as Error).message || "Failed to fetch resources"
-                    }
-                });
-
-                createdModules.push(created);
-            }
+            // Queue enrichment
+            const enrichment = this.enrichModuleResources(
+                created.id,
+                searchTerm,
+                guaranteedUrl,
+                index + 1,
+                modules.length
+            ).catch((err) => {
+                console.error(`[Background Enrichment] Failed for module ${created.id}:`, err);
+            });
+            enrichmentPromises.push(enrichment);
         }
 
-        return createdModules.map((m) => m.id);
+        // Wait for ALL modules to be enriched before returning
+        await Promise.allSettled(enrichmentPromises);
+
+        return moduleIds;
+    }
+
+    /**
+     * Background resource enrichment for deep content (Transcript/Summary/links)
+     */
+    private async enrichModuleResources(
+        moduleId: number,
+        topic: string,
+        videoUrl: string,
+        index: number,
+        total: number
+    ): Promise<void> {
+        try {
+            console.log(`[Deep Enrichment] ${index}/${total} Starting for module ${moduleId}: ${topic}`);
+
+            // 1. Fetch Reading Resources (converts from placeholder to real links)
+            const readingResources = await resourceUrlService.findReadingResources(topic);
+
+            // 2. Fetch/Process Transcript and Summary
+            let transcript = null;
+            let summary = null;
+
+            // Logic simplified: Use context-aware Quick Summary exclusively
+            const moduleForDetails = await LearningModule.findByPk(moduleId);
+            summary = await transcriptService.generateQuickSummary({
+                title: moduleForDetails?.title || topic,
+                description: moduleForDetails?.description || "",
+                category: moduleForDetails?.category || undefined,
+                skills: moduleForDetails?.skillTags || undefined,
+                targetUserGroup: moduleForDetails?.targetUserGroups?.[0] || undefined,
+                difficulty: moduleForDetails?.difficulty || undefined
+            });
+
+            if (videoUrl && !videoUrl.includes("zOjov-2OZ0E")) {
+                transcript = await transcriptService.fetchAndStoreTranscript(moduleId, videoUrl);
+            }
+
+            // 3. Update module with real content (Summary/Transcript status)
+            await LearningModule.update(
+                {
+                    status: "completed", // New column
+                    generationMetadata: {
+                        generatedAt: new Date(),
+                        readingResources,
+                        hasTranscript: !!transcript,
+                        summaryPreview: summary ? summary.substring(0, 500) + "..." : null
+                    }
+                },
+                { where: { id: moduleId } }
+            );
+
+            // 4. Update the ModuleTranscript record with the summary
+            if (transcript) {
+                await ModuleTranscript.update({ summary }, { where: { moduleId } });
+            }
+
+            console.log(`[Background] Enrichment completed for module ${moduleId}`);
+        } catch (error) {
+            console.error(`[Background] Critical enrichment error for ${moduleId}:`, error);
+            await LearningModule.update(
+                {
+                    generationMetadata: {
+                        status: "failed",
+                        error: "Failed to fetch some resources in background"
+                    }
+                },
+                { where: { id: moduleId } }
+            );
+        }
+    }
+
+    /**
+     * Helper to fetch video and transcript in sequence but within a parallel block
+     */
+    private async fetchVideoWithTranscript(topic: string, duration?: number) {
+        try {
+            const videoUrl = await resourceUrlService.findVideoUrl(topic, duration);
+            let transcript = null;
+
+            if (videoUrl) {
+                transcript = await transcriptService.fetchTranscriptByUrl(videoUrl);
+            }
+
+            return { videoUrl, transcript };
+        } catch (error) {
+            console.error(`Error in fetchVideoWithTranscript for ${topic}:`, error);
+            return { videoUrl: null, transcript: null };
+        }
+    }
+
+    /**
+     * Chunk text for database storage
+     */
+    private chunkTextForStorage(text: string, size: number): string[] {
+        const chunks = [];
+        for (let i = 0; i < text.length; i += size) {
+            chunks.push(text.substring(i, i + size));
+        }
+        return chunks;
     }
 
     /**
@@ -683,15 +520,35 @@ Return a JSON object with:
             return null;
         }
 
-        // Fetch associated modules separately
+        // Fetch associated modules
         const modules = await LearningModule.findAll({
             where: { learningPathId: learningPath.id },
             order: [["orderInPath", "ASC"]]
         });
 
+        // Fetch user progress for these modules
+        const progress = await UserModuleProgress.findAll({
+            where: {
+                userId,
+                moduleId: modules.map((m) => m.id)
+            }
+        });
+
+        const progressMap = new Map(progress.map((p) => [p.moduleId, p.status]));
+
+        const modulesWithStatus = modules.map((module) => {
+            const status = progressMap.get(module.id) || "pending";
+
+            return {
+                ...module.toJSON(),
+                userStatus: status,
+                isCompleted: status === "completed"
+            };
+        });
+
         return {
             ...learningPath.toJSON(),
-            modules
+            modules: modulesWithStatus
         };
     }
 

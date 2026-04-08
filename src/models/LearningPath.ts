@@ -7,7 +7,7 @@ class LearningPath extends Model {
     declare path: any; // JSON type
     declare userId: number;
     declare userPreferencesId: number | null;
-    declare status: "generating" | "completed" | "failed";
+    declare status: "pending" | "inprogress" | "completed" | "failed";
     declare generationError: string | null;
     declare generatedAt: Date | null;
     declare createdAt: Date;
@@ -42,8 +42,8 @@ LearningPath.init(
             allowNull: false
         },
         status: {
-            type: DataTypes.ENUM("generating", "completed", "failed"),
-            defaultValue: "generating",
+            type: DataTypes.ENUM("pending", "inprogress", "completed", "failed"),
+            defaultValue: "pending",
             allowNull: false
         },
         generationError: {

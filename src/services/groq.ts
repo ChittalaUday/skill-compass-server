@@ -3,26 +3,27 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+// Standard high-quality chat models.
+// We explicitly EXCLUDE specialized models (like guard, vision, or preview)
+// to avoid common 400 errors seen in logs.
+const ALLOWED_CHAT_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "gemma2-9b-it", "llama3-8b-8192"];
 
-// Default model to use.
 const DEFAULT_MODEL = "llama-3.3-70b-versatile";
+const BLOCK_DURATION_MS = 5 * 60 * 60 * 1000; // 5 hours
 
-// Hardcoded fallback models for CHAT COMPLETIONS ONLY (no audio/whisper models)
-const STATIC_FALLBACK_MODELS = [
-    "llama-3.3-70b-versatile",
-    "llama-3.1-8b-instant",
-    "qwen/qwen3-32b",
-    "meta-llama/llama-4-maverick-17b-128e-instruct",
-    "meta-llama/llama-4-scout-17b-16e-instruct",
-    "groq/compound",
-    "groq/compound-mini",
-    "moonshotai/kimi-k2-instruct-0905",
-    "moonshotai/kimi-k2-instruct",
-    "allam-2-7b"
-    // Excluded: whisper-large-v3-turbo, whisper-large-v3 (audio models, not chat)
-    // Excluded: llama-guard, llama-prompt-guard, orpheus (specialized models)
-];
+// Load all available API keys
+const API_KEYS = [process.env.GROQ_API_KEY_1, process.env.GROQ_API_KEY_2, process.env.GROQ_API_KEY_3].filter(
+    (key): key is string => !!key
+);
+
+// Initialize clients for each key
+const clients = API_KEYS.map((key) => ({
+    key,
+    groq: new Groq({ apiKey: key })
+}));
+
+// Tracking blocks: Map<"keyIndex:modelName" | "keyIndex:GLOBAL", timestamp>
+const blockedUntil = new Map<string, number>();
 
 export interface GroqCompletionOptions {
     model?: string;
@@ -31,164 +32,107 @@ export interface GroqCompletionOptions {
     systemPrompt?: string;
 }
 
-const blockedModels = new Map<string, number>();
-
-let cachedModels: string[] = [];
-let lastFetchTime = 0;
-const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
-
 /**
- * Fetches available models from Groq API or returns cached/static list.
+ * Main execution wrapper with API Key rotation and Model fallback
  */
-async function getAvailableModels(): Promise<string[]> {
-    const now = Date.now();
-    if (cachedModels.length > 0 && now - lastFetchTime < CACHE_TTL_MS) {
-        return cachedModels;
-    }
-
-    try {
-        const list = await groq.models.list();
-        const models = list.data.map((m: any) => m.id).filter((id: string) => typeof id === "string");
-
-        if (models.length > 0) {
-            cachedModels = models;
-            lastFetchTime = now;
-            console.log(`Fetched ${models.length} models from Groq API.`);
-            return models;
-        }
-    } catch (error) {
-        console.warn("Failed to fetch models from Groq API, using static fallback:", error);
-    }
-
-    return STATIC_FALLBACK_MODELS;
-}
-
-/**
- * Helper to parse retry duration from Groq error message.
- * Example: "Please try again in 9m0s."
- */
-function parseRetryAfter(message: string): number {
-    const match = message.match(/try again in (\d+m)?(\d+(\.\d+)?s)?/);
-    if (!match) return 60 * 1000; // Default 1 minute
-
-    let ms = 0;
-    if (match[1]) {
-        ms += parseInt(match[1]) * 60 * 1000;
-    }
-    if (match[2]) {
-        ms += parseFloat(match[2]) * 1000;
-    }
-    return ms > 0 ? ms : 60 * 1000;
-}
-
-/**
- * Helper to retry an operation with fallback models on rate limit errors.
- */
-async function withModelFallback<T>(
-    operation: (model: string) => Promise<T>,
-    preferredModel: string = DEFAULT_MODEL
+async function withExecutionFallback<T>(
+    operation: (groq: Groq, model: string) => Promise<T>,
+    requestedModel?: string
 ): Promise<T> {
-    const availableModels = await getAvailableModels();
     const now = Date.now();
-
-    // Clean up expired blocks
-    for (const [model, blockedUntil] of blockedModels.entries()) {
-        if (now > blockedUntil) {
-            blockedModels.delete(model);
-        }
-    }
-
-    // Ensure preferred model is first, then unique available models (excluding preferred)
-    const allModels = [preferredModel, ...availableModels.filter((m: string) => m !== preferredModel)];
-
-    // Filter out blocked models
-    const modelsToTry = allModels.filter((m: string) => !blockedModels.has(m));
-
-    // If all models are blocked, try all models as a last resort (or we'll have nothing to try)
-    const finalModelsToTry = modelsToTry.length > 0 ? modelsToTry : allModels;
-
     let lastError: any;
 
-    for (const model of finalModelsToTry) {
-        try {
-            return await operation(model);
-        } catch (error: any) {
-            console.warn(`Groq request failed with model ${model}:`, error.status, error.message);
-            lastError = error;
+    // Try each API key in order
+    for (let keyIdx = 0; keyIdx < clients.length; keyIdx++) {
+        const { key, groq } = clients[keyIdx];
 
-            const isRateLimit =
-                error?.status === 429 ||
-                error?.code === "rate_limit_exceeded" ||
-                (error?.message && error.message.includes("429"));
+        // Skip if this specific key is globally blocked
+        if (blockedUntil.has(`${keyIdx}:GLOBAL`) && now < (blockedUntil.get(`${keyIdx}:GLOBAL`) || 0)) {
+            continue;
+        }
 
-            if (isRateLimit) {
-                const retryAfter = parseRetryAfter(error.message || "");
-                console.log(`Model ${model} rate limited. Blocking for ${Math.round(retryAfter / 1000)}s.`);
-                blockedModels.set(model, Date.now() + retryAfter);
+        // Prepare models to try for this key
+        const modelsToTry =
+            requestedModel && ALLOWED_CHAT_MODELS.includes(requestedModel)
+                ? [requestedModel, ...ALLOWED_CHAT_MODELS.filter((m) => m !== requestedModel)]
+                : ALLOWED_CHAT_MODELS;
+
+        for (const model of modelsToTry) {
+            const blockId = `${keyIdx}:${model}`;
+
+            // Skip if this (key, model) combo is blocked
+            if (blockedUntil.has(blockId) && now < (blockedUntil.get(blockId) || 0)) {
+                continue;
             }
 
-            const isRetryable =
-                isRateLimit ||
-                error?.status === 400 || // Bad request (e.g., model doesn't support chat)
-                error?.status === 503 || // Service unavailable
-                (error?.message && error.message.includes("does not support"));
+            try {
+                console.log(`🤖 [Key ${keyIdx + 1}] Attempting Groq completion with model: ${model}`);
+                return await operation(groq, model);
+            } catch (error: any) {
+                const status = error.status || 0;
+                const message = error.message || "";
 
-            if (isRetryable) {
-                console.log(`Switching to next model due to error (${error?.status || "unknown"})...`);
-                continue; // Try next model
+                console.error(`❌ [Key ${keyIdx + 1}] Groq failure for model ${model}:`, { status, message });
+                lastError = error;
+
+                // Permanent error categorization (e.g., 400 for model terms or invalid model type)
+                // We block this specific model/key combo for 5 hours as requested.
+                const isRetryableWithError = status === 429 || status === 503 || status === 500 || status === 413;
+                const isPermanentForModel =
+                    status === 400 || message.includes("not support") || message.includes("terms acceptance");
+
+                if (isPermanentForModel || isRetryableWithError) {
+                    console.warn(`⏳ Blocking model ${model} on Key ${keyIdx + 1} for 5 hours...`);
+                    blockedUntil.set(blockId, Date.now() + BLOCK_DURATION_MS);
+                }
+
+                // If it's a rate limit on the key itself (429), or a major failure, we might consider switching keys
+                if (status === 429) {
+                    console.log(`🔄 [Key ${keyIdx + 1}] Rate limited. Switching to next API key...`);
+                    break; // Exit model loop, try next key
+                }
+
+                console.log(`🔄 Switching to next available model...`);
+                continue;
             }
-
-            throw error; // Rethrow non-retryable errors
         }
     }
 
-    throw lastError;
+    throw lastError || new Error("All Groq API keys and models exhausted or blocked.");
 }
 
 /**
  * Generates a standard chat completion (string output).
- * @param prompt The user's input prompt.
- * @param options Configuration options.
- * @returns The generated text.
  */
 export async function getChatCompletion(prompt: string, options: GroqCompletionOptions = {}): Promise<string> {
     const { temperature = 0.7, max_tokens = 1024, systemPrompt, model: requestedModel } = options;
 
     const messages: Groq.Chat.Completions.ChatCompletionMessageParam[] = [];
-
-    if (systemPrompt) {
-        messages.push({ role: "system", content: systemPrompt });
-    }
-
+    if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
     messages.push({ role: "user", content: prompt });
 
-    return withModelFallback(async (model) => {
+    return withExecutionFallback(async (groq, model) => {
         const completion = await groq.chat.completions.create({
             messages,
             model,
             temperature,
             max_tokens
         });
-
         return completion.choices[0]?.message?.content || "";
     }, requestedModel);
 }
 
 /**
  * Generates a JSON output.
- * @param prompt The user's input prompt.
- * @param options Configuration options.
- * @returns The parsed JSON object.
  */
 export async function getJsonCompletion<T = any>(prompt: string, options: GroqCompletionOptions = {}): Promise<T> {
     const {
-        temperature = 0.5, // Lower temperature for structured output stability
+        temperature = 0.3,
         max_tokens = 2048,
         systemPrompt = "You are a helpful assistant that outputs strictly in JSON format.",
         model: requestedModel
     } = options;
 
-    // Ensure strict JSON instruction in system prompt
     const finalSystemPrompt = systemPrompt.includes("JSON")
         ? systemPrompt
         : `${systemPrompt} Output strictly in JSON format.`;
@@ -198,7 +142,7 @@ export async function getJsonCompletion<T = any>(prompt: string, options: GroqCo
         { role: "user", content: prompt }
     ];
 
-    return withModelFallback(async (model) => {
+    return withExecutionFallback(async (groq, model) => {
         const completion = await groq.chat.completions.create({
             messages,
             model,
@@ -209,7 +153,6 @@ export async function getJsonCompletion<T = any>(prompt: string, options: GroqCo
         });
 
         const content = completion.choices[0]?.message?.content || "{}";
-
         try {
             return JSON.parse(content) as T;
         } catch (_parseError) {
@@ -220,11 +163,7 @@ export async function getJsonCompletion<T = any>(prompt: string, options: GroqCo
 }
 
 /**
- * Generates a chat completion with vision capabilities.
- * @param prompt The user's input prompt.
- * @param imageUrl The URL of the image to analyze.
- * @param options Configuration options.
- * @returns The generated text.
+ * Vision completion (if needed, although usually bypassed in general path gen)
  */
 export async function getVisionCompletion(
     prompt: string,
@@ -232,15 +171,10 @@ export async function getVisionCompletion(
     options: GroqCompletionOptions = {}
 ): Promise<string> {
     const { temperature = 0.5, max_tokens = 1024, systemPrompt, model } = options;
-    // Use a vision-capable model if not specified
     const visionModel = model || "llama-3.2-11b-vision-preview";
 
     const messages: Groq.Chat.Completions.ChatCompletionMessageParam[] = [];
-
-    if (systemPrompt) {
-        messages.push({ role: "system", content: systemPrompt });
-    }
-
+    if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
     messages.push({
         role: "user",
         content: [
@@ -249,14 +183,13 @@ export async function getVisionCompletion(
         ]
     });
 
-    return withModelFallback(async (m) => {
+    return withExecutionFallback(async (groq, m) => {
         const completion = await groq.chat.completions.create({
             messages,
             model: m,
             temperature,
             max_tokens
         });
-
         return completion.choices[0]?.message?.content || "";
     }, visionModel);
 }

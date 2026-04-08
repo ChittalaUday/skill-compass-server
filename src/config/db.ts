@@ -1,15 +1,10 @@
 import "dotenv/config";
 import { Sequelize } from "sequelize";
 import fs from "fs";
-import AWS from "aws-sdk";
 
 const isNeon =
     process.env.DB_TYPE === "neon" || (process.env.DATABASE_URL && process.env.DATABASE_URL.includes("neon.tech"));
 const isAWS = process.env.DB_TYPE?.toUpperCase() === "AWS";
-
-if (isAWS) {
-    AWS.config.update({ region: process.env.AWS_REGION || "ap-southeast-2" });
-}
 
 // Helper to get CA content for AWS RDS
 const getCaContent = () => {

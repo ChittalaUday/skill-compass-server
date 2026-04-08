@@ -37,6 +37,20 @@ router.get(
     learningPathController.getPathModule
 );
 
+// Get module transcript and summary
+router.get(
+    "/modules/:moduleId/transcript",
+    requireGroup("TEENS", "COLLEGE_STUDENTS", "PROFESSIONALS", "SENIORS"),
+    learningPathController.getModuleTranscript
+);
+
+// Force re-summarize a module
+router.post(
+    "/modules/:moduleId/resummarize",
+    requireGroup("TEENS", "COLLEGE_STUDENTS", "PROFESSIONALS", "SENIORS"),
+    learningPathController.resummarizeModule
+);
+
 // Regenerate learning path - excludes KIDS
 router.post(
     "/regenerate",

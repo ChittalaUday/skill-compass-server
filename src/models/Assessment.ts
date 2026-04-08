@@ -11,7 +11,7 @@ class Assessment extends Model {
     declare instructions: string | null;
     declare requiredDeliverables: string[];
     declare submissionData: any; // JSONB
-    declare status: "not-started" | "in-progress" | "submitted" | "under-review" | "graded" | "revision-needed";
+    declare status: "pending" | "inprogress" | "submitted" | "under-review" | "graded" | "revision-needed";
     declare score: number | null;
     declare maxScore: number;
     declare grade: string | null;
@@ -72,15 +72,8 @@ Assessment.init(
             defaultValue: {}
         },
         status: {
-            type: DataTypes.ENUM(
-                "not-started",
-                "in-progress",
-                "submitted",
-                "under-review",
-                "graded",
-                "revision-needed"
-            ),
-            defaultValue: "not-started"
+            type: DataTypes.ENUM("pending", "inprogress", "submitted", "under-review", "graded", "revision-needed"),
+            defaultValue: "pending"
         },
         score: {
             type: DataTypes.INTEGER,

@@ -18,4 +18,7 @@ router.get("/module/:moduleId", learningProgressController.getModuleProgress);
 // Update progress for a module
 router.post("/module/:moduleId", learningProgressController.updateModuleProgress);
 
+// Mark module as completed
+router.post("/module/:moduleId/complete", learningProgressController.completeModule);
+
 export default router;

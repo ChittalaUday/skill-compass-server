@@ -5,7 +5,7 @@ class UserModuleProgress extends Model {
     declare id: number;
     declare userId: number;
     declare moduleId: number;
-    declare status: "not-started" | "in-progress" | "completed" | "abandoned";
+    declare status: "pending" | "inprogress" | "completed" | "failed";
     declare timeSpent: number | null; // Minutes
     declare progressPercentage: number;
     declare completedAt: Date | null;
@@ -14,6 +14,8 @@ class UserModuleProgress extends Model {
     declare passed: boolean | null;
     declare rating: number | null;
     declare feedback: string | null;
+    declare testCompleted: boolean;
+    declare testResults: any; // JSONB
     declare progressData: any; // JSONB
 }
 
@@ -41,8 +43,8 @@ UserModuleProgress.init(
             }
         },
         status: {
-            type: DataTypes.ENUM("not-started", "in-progress", "completed", "abandoned"),
-            defaultValue: "not-started"
+            type: DataTypes.ENUM("pending", "inprogress", "completed", "failed"),
+            defaultValue: "pending"
         },
         timeSpent: {
             type: DataTypes.INTEGER,
@@ -82,6 +84,14 @@ UserModuleProgress.init(
         },
         feedback: {
             type: DataTypes.TEXT,
+            allowNull: true
+        },
+        testCompleted: {
+            type: DataTypes.BOOLEAN,
+            defaultValue: false
+        },
+        testResults: {
+            type: DataTypes.JSONB,
             allowNull: true
         },
         progressData: {

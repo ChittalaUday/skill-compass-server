@@ -1,5 +1,4 @@
 import { Client } from "pg";
-import AWS from "aws-sdk";
 import fs from "fs";
 import dotenv from "dotenv";
 
@@ -12,8 +11,6 @@ async function main(): Promise<void> {
         console.log("Skipping AWS DB test because DB_TYPE is not AWS");
         return;
     }
-
-    AWS.config.update({ region: process.env.AWS_REGION || "ap-southeast-2" });
 
     // Parsing DATABASE_URL if present, otherwise using individual components
     const clientConfig: any = {
