@@ -12,9 +12,13 @@ const MAX_RETRIES = 3;
 const BLOCK_DURATION_MS = 5 * 60 * 60 * 1000; // 5 hours
 
 // Load all available API keys
-const API_KEYS = [process.env.GROQ_API_KEY_1, process.env.GROQ_API_KEY_2, process.env.GROQ_API_KEY_3].filter(
-    (key): key is string => !!key
-);
+const API_KEYS = [
+    process.env.GROQ_API_KEY,
+    process.env.GROQ_API_KEY_1,
+    process.env.GROQ_API_KEY_2,
+    process.env.GROQ_API_KEY_3,
+    process.env.GROQ_API_KEY_4
+].filter((key): key is string => !!key);
 
 // Initialize clients for each key
 const clients = API_KEYS.map((key) => ({
