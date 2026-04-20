@@ -2,6 +2,8 @@ import { Request, Response } from "express";
 import { learningPathService } from "../services/learningPath.service.js";
 import { transcriptService } from "../services/transcript.service.js";
 import { sendResponse } from "../utils/customResponse.js";
+import LearningModule from "../models/LearningModule.js";
+import LearningPath from "../models/LearningPath.js";
 
 export const learningPathController = {
     /**
@@ -67,16 +69,19 @@ export const learningPathController = {
             const userId = (req as any).user.id;
             const moduleId = req.params.moduleId;
 
-            const learningPath = await learningPathService.getLearningPathByUserId(userId);
-
-            if (!learningPath) {
-                return sendResponse(res, false, "No learning path found", 404);
-            }
-
-            const module = learningPath.modules.find((m: any) => m.id === Number(moduleId));
+            // Fetch module directly to check ownership
+            const module = await LearningModule.findByPk(Number(moduleId), {
+                include: [
+                    {
+                        model: LearningPath,
+                        as: "learningPath",
+                        where: { userId }
+                    }
+                ]
+            });
 
             if (!module) {
-                return sendResponse(res, false, "Module not found", 404);
+                return sendResponse(res, false, "Module not found or you don't have access to it", 404);
             }
 
             // Backend locking removed - frontend will handle progression
@@ -110,14 +115,18 @@ export const learningPathController = {
             const { force } = req.query;
 
             // First verify user is authorized (owns the path containing this module)
-            const learningPath = await learningPathService.getLearningPathByUserId(userId);
-            if (!learningPath) {
-                return sendResponse(res, false, "No learning path found", 404);
-            }
+            const moduleExists = await LearningModule.findByPk(Number(moduleId), {
+                include: [
+                    {
+                        model: LearningPath,
+                        as: "learningPath",
+                        where: { userId }
+                    }
+                ]
+            });
 
-            const moduleExists = learningPath.modules.find((m: any) => m.id === Number(moduleId));
             if (!moduleExists) {
-                return sendResponse(res, false, "Module not found in your path", 404);
+                return sendResponse(res, false, "Module not found in your learning history", 404);
             }
 
             // Backend locking removed - frontend will handle progression
@@ -148,14 +157,18 @@ export const learningPathController = {
             const { moduleId } = req.params;
 
             // First verify user is authorized (owns the path containing this module)
-            const learningPath = await learningPathService.getLearningPathByUserId(userId);
-            if (!learningPath) {
-                return sendResponse(res, false, "No learning path found", 404);
-            }
+            const moduleExists = await LearningModule.findByPk(Number(moduleId), {
+                include: [
+                    {
+                        model: LearningPath,
+                        as: "learningPath",
+                        where: { userId }
+                    }
+                ]
+            });
 
-            const moduleExists = learningPath.modules.find((m: any) => m.id === Number(moduleId));
             if (!moduleExists) {
-                return sendResponse(res, false, "Module not found in your path", 404);
+                return sendResponse(res, false, "Module not found in your learning history", 404);
             }
 
             // Force regeneration

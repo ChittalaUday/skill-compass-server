@@ -29,7 +29,14 @@ routes.use("/learning-schedule", learningScheduleRoutes);
 routes.use("/admin", adminRoutes);
 routes.use("/kids", kidsRoutes);
 
-routes.use((err: any, req: Request, res: Response, _next: NextFunction) => {
+// 404 Handler - after all routes
+routes.use((req: Request, res: Response) => {
     sendResponse(res, false, `${req.url} is not found`, 404);
+});
+
+// Global Error Handler for this router
+routes.use((err: any, req: Request, res: Response, _next: NextFunction) => {
+    console.error(`[API Error] ${req.method} ${req.url}:`, err);
+    sendResponse(res, false, err.message || "Internal Server Error", err.status || 500);
 });
 export default routes;
